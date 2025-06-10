@@ -34,8 +34,11 @@ class OmicsAIClient:
     KNOWN_NETWORKS = {
         "hifisolves": "hifisolves.org",
         "neuroscience": "neuroscience.ai", 
-        "parkinsons": "cloud.parkinsonsroadmap.org",
-        "biomedical": "biomedical.ai"
+        "asap": "cloud.parkinsonsroadmap.org",  # Aligning Science Across Parkinson's
+        "parkinsons": "cloud.parkinsonsroadmap.org",  # Keep backward compatibility
+        "biomedical": "biomedical.ai",
+        "viral": "viral.ai",
+        "targetals": "dataportal.targetals.org"  # Target ALS
     }
     
     def __init__(self, network: str = "hifisolves.org", access_token: Optional[str] = None):
