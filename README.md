@@ -17,8 +17,6 @@ A simple Python client library for interacting with [Omics AI Explorer](https://
 pip install omics-ai-explorer
 ```
 
-> **Note**: Package will be available on PyPI soon. For now, install from source.
-
 Or install from source:
 
 ```bash
