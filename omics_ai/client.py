@@ -4,6 +4,7 @@ Main client class for interacting with Omics AI Explorer instances.
 
 import json
 import re
+import time
 from typing import Dict, List, Optional, Any, Union
 from urllib.parse import urlencode, quote
 
@@ -207,15 +208,22 @@ class OmicsAIClient:
             
         return fields
     
-    def query(self, 
-              collection_slug: str, 
-              table_name: str, 
-              filters: Optional[Dict[str, Any]] = None,
-              limit: int = 100,
-              offset: int = 0,
-              order_by: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
+    def query_with_polling(self, 
+                          collection_slug: str, 
+                          table_name: str, 
+                          filters: Optional[Dict[str, Any]] = None,
+                          limit: int = 100,
+                          offset: int = 0,
+                          order_by: Optional[Dict[str, str]] = None,
+                          max_polls: int = 10,
+                          poll_interval: float = 2.0) -> Dict[str, Any]:
         """
-        Query a table with optional filters and pagination.
+        Query a table with polling for async results.
+        
+        The query endpoint is asynchronous:
+        1. First call returns next_page_token but no data
+        2. Poll with the token until data is ready
+        3. Eventually get data array + next_page_tokens for pagination
         
         Args:
             collection_slug: The slug name of the collection
@@ -224,20 +232,11 @@ class OmicsAIClient:
             limit: Maximum number of rows to return (default: 100)
             offset: Number of rows to skip (default: 0)
             order_by: Optional ordering specification {'field': 'column_name', 'direction': 'ASC'|'DESC'}
+            max_polls: Maximum number of polling attempts (default: 10)
+            poll_interval: Seconds to wait between polls (default: 2.0)
             
         Returns:
             Dictionary containing 'data' (list of rows) and pagination info
-            
-        Example:
-            >>> # Simple query with filters
-            >>> results = client.query(
-            ...     "gnomad", 
-            ...     "collections.gnomad.variants",
-            ...     filters={"chrom": [{"operation": "EQ", "value": "chr1", "type": "STRING"}]},
-            ...     limit=10
-            ... )
-            >>> for row in results['data']:
-            ...     print(row)
         """
         if not collection_slug or not table_name:
             raise ValidationError("Both collection_slug and table_name are required")
@@ -259,29 +258,77 @@ class OmicsAIClient:
             
         endpoint = f"/api/collections/{quote(collection_slug)}/tables/{quote(table_name)}/filter"
         
-        response = self._make_request(
-            'POST', 
-            endpoint,
-            json=payload,
-            headers={'Content-Type': 'application/json'}
-        )
+        for poll_count in range(max_polls):
+            response = self._make_request(
+                'POST', 
+                endpoint,
+                json=payload,
+                headers={'Content-Type': 'application/json'}
+            )
+            
+            # The API returns JSON Lines format - extract the final JSON object
+            raw_text = response.text
+            json_objects = re.findall(r'\{[^}]*\}(?=\s*\{|\s*$)', raw_text, re.DOTALL)
+            
+            if not json_objects:
+                raise OmicsAIError("No valid JSON objects found in response")
+                
+            try:
+                result = json.loads(json_objects[-1])  # Take the last JSON object
+            except json.JSONDecodeError as e:
+                raise OmicsAIError(f"Failed to parse JSON response: {e}")
+            
+            # Check if we have data or need to poll
+            if 'data' in result and isinstance(result['data'], list):
+                return result
+            elif 'next_page_token' in result:
+                # Update payload with next page token for polling
+                payload['next_page_token'] = result['next_page_token']
+                if poll_count < max_polls - 1:  # Don't sleep on last attempt
+                    time.sleep(poll_interval)
+            else:
+                raise OmicsAIError(f"Unexpected response format: {list(result.keys())}")
         
-        # The API returns JSON Lines format - extract the final JSON object
-        raw_text = response.text
-        json_objects = re.findall(r'\{[^}]*\}(?=\s*\{|\s*$)', raw_text, re.DOTALL)
+        raise OmicsAIError(f"Query timed out after {max_polls} polls ({max_polls * poll_interval}s)")
+
+    def query(self, 
+              collection_slug: str, 
+              table_name: str, 
+              filters: Optional[Dict[str, Any]] = None,
+              limit: int = 100,
+              offset: int = 0,
+              order_by: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
+        """
+        Query a table with optional filters and pagination (with auto-polling for async queries).
         
-        if not json_objects:
-            raise OmicsAIError("No valid JSON objects found in response")
+        Args:
+            collection_slug: The slug name of the collection
+            table_name: The qualified table name
+            filters: Dictionary of filters to apply (field_name -> filter_spec)
+            limit: Maximum number of rows to return (default: 100)
+            offset: Number of rows to skip (default: 0)
+            order_by: Optional ordering specification {'field': 'column_name', 'direction': 'ASC'|'DESC'}
             
-        try:
-            result = json.loads(json_objects[-1])  # Take the last JSON object
-        except json.JSONDecodeError as e:
-            raise OmicsAIError(f"Failed to parse JSON response: {e}")
+        Returns:
+            Dictionary containing 'data' (list of rows) and pagination info
             
-        if 'data' not in result or not isinstance(result['data'], list):
-            raise OmicsAIError("Valid JSON parsed, but no 'data' array found")
+        Note:
+            This method automatically handles asynchronous queries by polling for results.
+            For more control over polling behavior, use query_with_polling() directly.
             
-        return result
+        Example:
+            >>> # Simple query with filters
+            >>> results = client.query(
+            ...     "gnomad", 
+            ...     "collections.gnomad.variants",
+            ...     filters={"chrom": [{"operation": "EQ", "value": "chr1", "type": "STRING"}]},
+            ...     limit=10
+            ... )
+            >>> for row in results['data']:
+            ...     print(row)
+        """
+        # Use polling by default to handle async queries
+        return self.query_with_polling(collection_slug, table_name, filters, limit, offset, order_by)
     
     def simple_query(self, 
                      collection_slug: str, 
