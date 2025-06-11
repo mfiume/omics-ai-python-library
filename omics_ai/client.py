@@ -3,7 +3,6 @@ Main client class for interacting with Omics AI Explorer instances.
 """
 
 import json
-import re
 import time
 from typing import Dict, List, Optional, Any, Union
 from urllib.parse import urlencode, quote
@@ -90,6 +89,61 @@ class OmicsAIClient:
                 raise OmicsAIError(f"HTTP error {e.response.status_code}: {e}")
         except requests.exceptions.RequestException as e:
             raise NetworkError(f"Network error: {e}")
+    
+    def _parse_json_lines_response(self, raw_text: str) -> Dict[str, Any]:
+        """
+        Parse JSON Lines response format from Explorer APIs.
+        
+        Expected format:
+        {}
+        {}
+        {}
+        {"data": [...], "pagination": {...}, "data_model": {...}}
+        """
+        if not raw_text.strip():
+            raise OmicsAIError("Empty response received")
+        
+        # Split by lines and filter out empty lines
+        lines = [line.strip() for line in raw_text.strip().split('\n') if line.strip()]
+        
+        if not lines:
+            raise OmicsAIError("No valid lines found in response")
+        
+        # Parse each line as JSON
+        json_objects = []
+        for i, line in enumerate(lines):
+            try:
+                obj = json.loads(line)
+                json_objects.append(obj)
+            except json.JSONDecodeError as e:
+                if line != "{}":
+                    # Only warn about non-empty objects that fail to parse
+                    pass  # Silently ignore parsing errors for robustness
+        
+        if not json_objects:
+            raise OmicsAIError("No valid JSON objects found in response")
+        
+        # Find the object with data (usually the last non-empty one)
+        for obj in reversed(json_objects):
+            if obj and 'data' in obj:
+                return obj
+        
+        # If no data object found, check for next_page_token (polling case)
+        for obj in reversed(json_objects):
+            if obj and 'next_page_token' in obj:
+                return obj
+        
+        # If we get here, we have only empty objects {} or unexpected format
+        if all(not obj for obj in json_objects):
+            # All empty objects - this might be a polling response
+            return {"next_page_token": "empty_response_poll"}
+        
+        # Return the last non-empty object
+        non_empty_objects = [obj for obj in json_objects if obj]
+        if non_empty_objects:
+            return non_empty_objects[-1]
+        
+        raise OmicsAIError(f"No data or next_page_token found in response")
     
     def list_collections(self) -> List[Dict[str, Any]]:
         """
@@ -266,24 +320,19 @@ class OmicsAIClient:
                 headers={'Content-Type': 'application/json'}
             )
             
-            # The API returns JSON Lines format - extract the final JSON object
-            raw_text = response.text
-            json_objects = re.findall(r'\{[^}]*\}(?=\s*\{|\s*$)', raw_text, re.DOTALL)
-            
-            if not json_objects:
-                raise OmicsAIError("No valid JSON objects found in response")
-                
+            # Parse the JSON Lines response using the robust parser
             try:
-                result = json.loads(json_objects[-1])  # Take the last JSON object
-            except json.JSONDecodeError as e:
-                raise OmicsAIError(f"Failed to parse JSON response: {e}")
+                result = self._parse_json_lines_response(response.text)
+            except OmicsAIError as e:
+                raise OmicsAIError(f"Failed to parse response: {e}")
             
             # Check if we have data or need to poll
             if 'data' in result and isinstance(result['data'], list):
                 return result
             elif 'next_page_token' in result:
                 # Update payload with next page token for polling
-                payload['next_page_token'] = result['next_page_token']
+                if result['next_page_token'] != 'empty_response_poll':
+                    payload['next_page_token'] = result['next_page_token']
                 if poll_count < max_polls - 1:  # Don't sleep on last attempt
                     time.sleep(poll_interval)
             else:
@@ -415,17 +464,11 @@ class OmicsAIClient:
             headers={'Content-Type': 'application/json'}
         )
         
-        # Parse the JSON Lines response
-        raw_text = response.text
-        json_objects = re.findall(r'\{[^}]*\}(?=\s*\{|\s*$)', raw_text, re.DOTALL)
-        
-        if not json_objects:
-            raise OmicsAIError("No valid JSON objects found in count response")
-            
+        # Parse the JSON Lines response using the robust parser
         try:
-            result = json.loads(json_objects[-1])
+            result = self._parse_json_lines_response(response.text)
             return result.get('count', 0)
-        except (json.JSONDecodeError, KeyError):
+        except OmicsAIError:
             raise OmicsAIError("Failed to parse count from response")
     
     def set_access_token(self, token: str):
