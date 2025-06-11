@@ -262,22 +262,22 @@ class OmicsAIClient:
             
         return fields
     
-    def query_with_polling(self, 
-                          collection_slug: str, 
-                          table_name: str, 
-                          filters: Optional[Dict[str, Any]] = None,
-                          limit: int = 100,
-                          offset: int = 0,
-                          order_by: Optional[Dict[str, str]] = None,
-                          max_polls: int = 10,
-                          poll_interval: float = 2.0) -> Dict[str, Any]:
+    def query(self, 
+              collection_slug: str, 
+              table_name: str, 
+              filters: Optional[Dict[str, Any]] = None,
+              limit: int = 100,
+              offset: int = 0,
+              order_by: Optional[Dict[str, str]] = None,
+              max_polls: int = 10,
+              poll_interval: float = 2.0) -> Dict[str, Any]:
         """
-        Query a table with polling for async results.
+        Query a table with optional filters and pagination (with auto-polling for async queries).
         
         The query endpoint is asynchronous:
         1. First call returns next_page_token but no data
         2. Poll with the token until data is ready
-        3. Eventually get data array + next_page_tokens for pagination
+        3. Eventually get data array + pagination info
         
         Args:
             collection_slug: The slug name of the collection
@@ -291,6 +291,17 @@ class OmicsAIClient:
             
         Returns:
             Dictionary containing 'data' (list of rows) and pagination info
+            
+        Example:
+            >>> # Simple query with filters
+            >>> results = client.query(
+            ...     "gnomad", 
+            ...     "collections.gnomad.variants",
+            ...     filters={"chrom": [{"operation": "EQ", "value": "chr1", "type": "STRING"}]},
+            ...     limit=10
+            ... )
+            >>> for row in results['data']:
+            ...     print(row)
         """
         if not collection_slug or not table_name:
             raise ValidationError("Both collection_slug and table_name are required")
@@ -339,45 +350,6 @@ class OmicsAIClient:
                 raise OmicsAIError(f"Unexpected response format: {list(result.keys())}")
         
         raise OmicsAIError(f"Query timed out after {max_polls} polls ({max_polls * poll_interval}s)")
-
-    def query(self, 
-              collection_slug: str, 
-              table_name: str, 
-              filters: Optional[Dict[str, Any]] = None,
-              limit: int = 100,
-              offset: int = 0,
-              order_by: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
-        """
-        Query a table with optional filters and pagination (with auto-polling for async queries).
-        
-        Args:
-            collection_slug: The slug name of the collection
-            table_name: The qualified table name
-            filters: Dictionary of filters to apply (field_name -> filter_spec)
-            limit: Maximum number of rows to return (default: 100)
-            offset: Number of rows to skip (default: 0)
-            order_by: Optional ordering specification {'field': 'column_name', 'direction': 'ASC'|'DESC'}
-            
-        Returns:
-            Dictionary containing 'data' (list of rows) and pagination info
-            
-        Note:
-            This method automatically handles asynchronous queries by polling for results.
-            For more control over polling behavior, use query_with_polling() directly.
-            
-        Example:
-            >>> # Simple query with filters
-            >>> results = client.query(
-            ...     "gnomad", 
-            ...     "collections.gnomad.variants",
-            ...     filters={"chrom": [{"operation": "EQ", "value": "chr1", "type": "STRING"}]},
-            ...     limit=10
-            ... )
-            >>> for row in results['data']:
-            ...     print(row)
-        """
-        # Use polling by default to handle async queries
-        return self.query_with_polling(collection_slug, table_name, filters, limit, offset, order_by)
     
     def simple_query(self, 
                      collection_slug: str, 
