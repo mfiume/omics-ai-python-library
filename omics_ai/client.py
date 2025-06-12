@@ -443,6 +443,148 @@ class OmicsAIClient:
         except OmicsAIError:
             raise OmicsAIError("Failed to parse count from response")
     
+    def _poll_sql_results(self, next_page_url: str, max_polls: int = 10, poll_interval: float = 2.0) -> Dict[str, Any]:
+        """
+        Poll the SQL results endpoint until data is ready.
+        
+        Args:
+            next_page_url: The URL to poll for results
+            max_polls: Maximum number of polling attempts
+            poll_interval: Seconds to wait between polls
+            
+        Returns:
+            Dictionary containing the final results
+        """
+        for poll_count in range(max_polls):
+            time.sleep(poll_interval)
+            
+            try:
+                response = requests.get(
+                    next_page_url,
+                    headers={
+                        'User-Agent': 'omics-ai-python-client/0.1.0',
+                        'Accept': 'application/json'
+                    },
+                    timeout=30
+                )
+                response.raise_for_status()
+                
+                if response.headers.get('content-type', '').startswith('application/json'):
+                    result = response.json()
+                else:
+                    # Handle potential text response
+                    try:
+                        result = json.loads(response.text)
+                    except json.JSONDecodeError:
+                        raise OmicsAIError(f"Invalid JSON response: {response.text[:200]}...")
+                
+                # Check for errors
+                if 'errors' in result and result['errors']:
+                    error_details = result['errors'][0].get('details', 'Unknown error')
+                    raise OmicsAIError(f"SQL query error: {error_details}")
+                
+                # Check if we have data
+                if result.get('data') and len(result['data']) > 0:
+                    return result
+                    
+                # Check if we should continue polling
+                if result.get('data') == [] and not result.get('pagination', {}).get('next_page_url'):
+                    # Empty results with no next page - query completed with no matches
+                    return result
+                    
+                # Continue polling if we have a next_page_url
+                if result.get('pagination', {}).get('next_page_url'):
+                    next_page_url = result['pagination']['next_page_url']
+                    continue
+                    
+                # No next page URL and empty data - return what we have
+                return result
+                
+            except requests.exceptions.RequestException as e:
+                if poll_count < max_polls - 1:
+                    continue  # Try again
+                else:
+                    raise NetworkError(f"Polling failed: {e}")
+        
+        raise OmicsAIError(f"SQL query timed out after {max_polls} polls ({max_polls * poll_interval}s)")
+    
+    def sql_query(self,
+                  collection_slug: str,
+                  sql: str,
+                  max_polls: int = 10,
+                  poll_interval: float = 2.0) -> Dict[str, Any]:
+        """
+        Execute a SQL query against a collection using the Data Connect search endpoint.
+        
+        This method uses the /api/collection/{collection}/data-connect/search endpoint
+        which supports direct SQL queries with Trino syntax.
+        
+        Args:
+            collection_slug: The slug name of the collection
+            sql: SQL query string (use Trino syntax with double quotes for identifiers)
+            max_polls: Maximum number of polling attempts (default: 10)
+            poll_interval: Seconds to wait between polls (default: 2.0)
+            
+        Returns:
+            Dictionary containing 'data' (list of rows) and pagination info
+            
+        Example:
+            >>> # Simple SQL query
+            >>> results = client.sql_query(
+            ...     "consortium-of-long-read-sequencing-colors",
+            ...     'SELECT * FROM "collections"."consortium_of_long_read_sequencing_colors"."small_variants" WHERE chrom = \'chrM\' LIMIT 10'
+            ... )
+            >>> for row in results['data']:
+            ...     print(row)
+            
+            >>> # Count query
+            >>> count_result = client.sql_query(
+            ...     "consortium-of-long-read-sequencing-colors", 
+            ...     'SELECT COUNT(*) as total FROM "collections"."consortium_of_long_read_sequencing_colors"."small_variants"'
+            ... )
+            >>> print(f"Total rows: {count_result['data'][0]['total']}")
+        """
+        if not collection_slug or not sql:
+            raise ValidationError("Both collection_slug and sql are required")
+        
+        payload = {"query": sql}
+        endpoint = f"/api/collection/{quote(collection_slug)}/data-connect/search"
+        
+        # Initial SQL query request
+        response = self._make_request(
+            'POST',
+            endpoint,
+            json=payload,
+            headers={'Content-Type': 'application/json'}
+        )
+        
+        if response.headers.get('content-type', '').startswith('application/json'):
+            result = response.json()
+        else:
+            # Handle potential text response
+            try:
+                result = json.loads(response.text)
+            except json.JSONDecodeError:
+                raise OmicsAIError(f"Invalid JSON response: {response.text[:200]}...")
+        
+        # Check for immediate errors
+        if 'errors' in result and result['errors']:
+            error_details = result['errors'][0].get('details', 'Unknown error')
+            raise OmicsAIError(f"SQL query error: {error_details}")
+        
+        # Check if we have immediate data (unlikely but possible)
+        if result.get('data') and len(result['data']) > 0:
+            return result
+        
+        # Check if we need to poll
+        next_page_url = result.get('pagination', {}).get('next_page_url')
+        if not next_page_url:
+            # No pagination URL but empty data - query completed with no results
+            return result
+        
+        # Poll for results
+        return self._poll_sql_results(next_page_url, max_polls, poll_interval)
+
     def set_access_token(self, token: str):
         """
         Set or update the access token for authenticated requests.

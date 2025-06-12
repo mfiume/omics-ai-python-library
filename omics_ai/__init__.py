@@ -23,6 +23,7 @@ __all__ = [
     "list_tables", 
     "get_schema_fields",
     "query",
+    "sql_query",
     "count"
 ]
 
@@ -125,6 +126,37 @@ def query(network: str, collection_slug: str, table_name: str,
     """
     client = OmicsAIClient(network, access_token)
     return client.query(collection_slug, table_name, filters, limit, offset, order_by, max_polls, poll_interval)
+
+
+def sql_query(network: str, collection_slug: str, sql: str,
+              max_polls: int = 10,
+              poll_interval: float = 2.0,
+              access_token: Optional[str] = None) -> Dict[str, Any]:
+    """
+    Execute a SQL query against a collection using the Data Connect search endpoint.
+    
+    Args:
+        network: Network URL or short name
+        collection_slug: The slug name of the collection
+        sql: SQL query string (use Trino syntax with double quotes for identifiers)
+        max_polls: Maximum number of polling attempts (default: 10)
+        poll_interval: Seconds to wait between polls (default: 2.0)
+        access_token: Optional access token for authenticated requests
+        
+    Returns:
+        Dictionary containing 'data' (list of rows) and pagination info
+        
+    Example:
+        >>> result = sql_query(
+        ...     "hifisolves", 
+        ...     "consortium-of-long-read-sequencing-colors",
+        ...     'SELECT * FROM "collections"."consortium_of_long_read_sequencing_colors"."small_variants" WHERE chrom = \'chrM\' LIMIT 10'
+        ... )
+        >>> for row in result['data']:
+        ...     print(row)
+    """
+    client = OmicsAIClient(network, access_token)
+    return client.sql_query(collection_slug, sql, max_polls, poll_interval)
 
 
 def count(network: str, collection_slug: str, table_name: str,
